@@ -915,11 +915,17 @@ function buildGrid() {
 
 // ========== Activate Letter ==========
 function activateLetter(letter) {
-    // SOUND FIRST — fire instantly before any DOM work
+    // Prepare animation
+    const container = document.querySelector('.letter-container[data-letter="' + letter + '"]');
+    if (!container) return;
+    container.classList.remove('active');
+    void container.offsetWidth;
+    container.classList.add('active');
+
+    // Sound + particles in same frame — animation and audio start together
     if (useSoundsMode) {
         playPhonics(letter);
     } else {
-        // Try recorded letter name first, fall back to SpeechSynthesis
         if (!playLetterName(letter)) {
             const text = letterNames[letter];
             const utterance = new SpeechSynthesisUtterance(text);
@@ -931,13 +937,6 @@ function activateLetter(letter) {
             speechSynthesis.speak(utterance);
         }
     }
-
-    // THEN animate
-    const container = document.querySelector('.letter-container[data-letter="' + letter + '"]');
-    if (!container) return;
-    container.classList.remove('active');
-    void container.offsetWidth;
-    container.classList.add('active');
     createParticles(container);
 
     setTimeout(() => {
