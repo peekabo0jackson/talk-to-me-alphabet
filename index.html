@@ -880,6 +880,7 @@ function buildLetter(letter, index) {
     container.addEventListener('animationend', function handler(e) {
         if (e.animationName === 'appear') {
             container.classList.remove('entering');
+            container.style.animationDelay = ''; // Clear so dance isn't delayed
             container.removeEventListener('animationend', handler);
         }
     });
