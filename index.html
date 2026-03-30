@@ -573,8 +573,12 @@ function generateSingingFaceSVG(def) {
 const phonicsPlayers = {};
 const namePlayers = {};
 let audioCtx = null;
+let audioUnlockPromise = null;
+let backgroundDecodeStarted = false;
 const audioBuffers = {};
+const audioBufferPromises = {};
 const nameAudioBuffers = {};
+const nameAudioBufferPromises = {};
 
 // Decode a single audio data URI to an AudioBuffer
 async function decodeOneAudio(dataUri) {
@@ -585,19 +589,124 @@ async function decodeOneAudio(dataUri) {
     return audioCtx.decodeAudioData(buf.buffer.slice(0));
 }
 
+function createAudioContext() {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    audioCtx = new AudioContextCtor({ latencyHint: 'interactive' });
+    return audioCtx;
+}
+
+async function resumeAudioContext(ctx) {
+    if (!ctx) return null;
+    if (ctx.state === 'running') return ctx;
+    await ctx.resume().catch(() => {});
+    if (ctx.state === 'running') return ctx;
+    return null;
+}
+
+function startBackgroundDecodeOnce() {
+    if (backgroundDecodeStarted || !audioCtx) return;
+    backgroundDecodeStarted = true;
+    startBackgroundDecode();
+}
+
+async function ensureAudioContext() {
+    if (!audioCtx || audioCtx.state === 'closed') {
+        if (!createAudioContext()) return null;
+    }
+
+    if (audioCtx.state === 'running') {
+        startBackgroundDecodeOnce();
+        return audioCtx;
+    }
+
+    if (!audioUnlockPromise) {
+        const currentCtx = audioCtx;
+        audioUnlockPromise = resumeAudioContext(currentCtx).then(ctx => {
+            if (ctx) return ctx;
+
+            // Chrome can ignore the first resume() and leave the context suspended.
+            if (audioCtx === currentCtx) {
+                const freshCtx = createAudioContext();
+                return resumeAudioContext(freshCtx);
+            }
+
+            return resumeAudioContext(audioCtx);
+        }).then(ctx => {
+            if (ctx && ctx.state === 'running') {
+                startBackgroundDecodeOnce();
+                return ctx;
+            }
+            return null;
+        }).finally(() => {
+            audioUnlockPromise = null;
+        });
+    }
+
+    return audioUnlockPromise;
+}
+
+function getDecodedBuffer(letter, dataMap, store, pendingStore) {
+    if (store[letter]) return Promise.resolve(store[letter]);
+    if (pendingStore[letter]) return pendingStore[letter];
+
+    const dataUri = dataMap[letter];
+    if (!dataUri) return Promise.resolve(null);
+
+    pendingStore[letter] = decodeOneAudio(dataUri).then(buffer => {
+        store[letter] = buffer;
+        return buffer;
+    }).finally(() => {
+        delete pendingStore[letter];
+    });
+
+    return pendingStore[letter];
+}
+
+function playBuffer(buffer) {
+    if (!audioCtx || audioCtx.state !== 'running' || !buffer) return false;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(audioCtx.destination);
+    src.start(0);
+    return true;
+}
+
+async function playBufferedLetter(letter, dataMap, store, pendingStore) {
+    if (audioCtx && audioCtx.state === 'running' && store[letter]) {
+        playBuffer(store[letter]);
+        return true;
+    }
+
+    const ctx = await ensureAudioContext();
+    if (!ctx) return false;
+
+    const buffer = await getDecodedBuffer(letter, dataMap, store, pendingStore);
+    if (!buffer) return false;
+
+    if (audioCtx.state !== 'running') {
+        const resumedCtx = await ensureAudioContext();
+        if (!resumedCtx) return false;
+    }
+
+    return playBuffer(buffer);
+}
+
 // Background decode: one letter per frame, no main thread blocking
 function startBackgroundDecode() {
     const all = [
-        ...Object.entries(phonicsData).map(([l,u]) => ['p',l,u]),
-        ...Object.entries(letterNameData).map(([l,u]) => ['n',l,u])
+        ...Object.keys(phonicsData).map(letter => ['p', letter]),
+        ...Object.keys(letterNameData).map(letter => ['n', letter])
     ];
     let i = 0;
     function next() {
         if (i >= all.length) return;
-        const [type, letter, uri] = all[i++];
+        const [type, letter] = all[i++];
+        const dataMap = type === 'p' ? phonicsData : letterNameData;
         const store = type === 'p' ? audioBuffers : nameAudioBuffers;
-        if (!store[letter]) {
-            decodeOneAudio(uri).then(b => { store[letter] = b; }).catch(() => {});
+        const pendingStore = type === 'p' ? audioBufferPromises : nameAudioBufferPromises;
+        if (!store[letter] && !pendingStore[letter]) {
+            getDecodedBuffer(letter, dataMap, store, pendingStore).catch(() => {});
         }
         requestAnimationFrame(next);
     }
@@ -605,57 +714,12 @@ function startBackgroundDecode() {
 }
 
 function playPhonics(letter) {
-    // Create AudioContext on first use (must be from user gesture)
-    if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        audioCtx.resume();
-        startBackgroundDecode(); // Non-blocking background decode
-    }
-
-    // INSTANT path: buffer already decoded
-    if (audioBuffers[letter]) {
-        const src = audioCtx.createBufferSource();
-        src.buffer = audioBuffers[letter];
-        src.connect(audioCtx.destination);
-        src.start(0);
-        return;
-    }
-
-    // First time for this letter: decode + play (~30-50ms)
-    decodeOneAudio(phonicsData[letter]).then(buf => {
-        audioBuffers[letter] = buf;
-        const src = audioCtx.createBufferSource();
-        src.buffer = buf;
-        src.connect(audioCtx.destination);
-        src.start(0);
-    }).catch(() => {});
+    playBufferedLetter(letter, phonicsData, audioBuffers, audioBufferPromises).catch(() => {});
 }
 
 function playLetterName(letter) {
-    if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        startBackgroundDecode();
-    }
-
-    // INSTANT path
-    if (nameAudioBuffers[letter]) {
-        const src = audioCtx.createBufferSource();
-        src.buffer = nameAudioBuffers[letter];
-        src.connect(audioCtx.destination);
-        src.start(0);
-        return true;
-    }
-
-    // First time: decode + play
-    const dataUri = letterNameData[letter];
-    if (!dataUri) return false;
-    decodeOneAudio(dataUri).then(buf => {
-        nameAudioBuffers[letter] = buf;
-        const src = audioCtx.createBufferSource();
-        src.buffer = buf;
-        src.connect(audioCtx.destination);
-        src.start(0);
-    }).catch(() => {});
+    if (!letterNameData[letter]) return false;
+    playBufferedLetter(letter, letterNameData, nameAudioBuffers, nameAudioBufferPromises).catch(() => {});
     return true;
 }
 
@@ -948,6 +1012,10 @@ function toggleFullscreen() {
     }
 }
 
+function primeAudio() {
+    ensureAudioContext().catch(() => {});
+}
+
 // ========== Keyboard Input (with hold-to-repeat) ==========
 let heldKey = null;
 let holdInterval = null;
@@ -966,7 +1034,7 @@ document.addEventListener('keydown', e => {
     // Play immediately
     activateLetter(key);
 
-    // Repeat every 1 second while held
+    // Repeat every 2 seconds while held
     holdInterval = setInterval(() => activateLetter(key), 2000);
 });
 
@@ -980,6 +1048,9 @@ document.addEventListener('keyup', e => {
 });
 
 // ========== Init ==========
+document.addEventListener('pointerdown', primeAudio, { capture: true, passive: true });
+document.addEventListener('touchstart', primeAudio, { capture: true, passive: true });
+document.addEventListener('keydown', primeAudio, { capture: true });
 buildGrid();
 setTimeout(randomBlink, 2500);
 </script>
