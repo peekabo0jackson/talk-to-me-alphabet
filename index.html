@@ -915,14 +915,21 @@ function buildGrid() {
 
 // ========== Activate Letter ==========
 function activateLetter(letter) {
+    const t0 = performance.now();
+
     // Prepare animation
     const container = document.querySelector('.letter-container[data-letter="' + letter + '"]');
     if (!container) return;
+    const t1 = performance.now();
+
     container.classList.remove('active');
     void container.offsetWidth;
-    container.classList.add('active');
+    const t2 = performance.now();
 
-    // Sound + particles in same frame — animation and audio start together
+    container.classList.add('active');
+    const t3 = performance.now();
+
+    // Sound
     if (useSoundsMode) {
         playPhonics(letter);
     } else {
@@ -937,7 +944,21 @@ function activateLetter(letter) {
             speechSynthesis.speak(utterance);
         }
     }
+    const t4 = performance.now();
+
     createParticles(container);
+    const t5 = performance.now();
+
+    // Telemetry
+    console.log(
+        `[${letter.toUpperCase()}] query:${(t1-t0).toFixed(1)}ms | reflow:${(t2-t1).toFixed(1)}ms | addClass:${(t3-t2).toFixed(1)}ms | sound:${(t4-t3).toFixed(1)}ms | particles:${(t5-t4).toFixed(1)}ms | TOTAL:${(t5-t0).toFixed(1)}ms`
+    );
+
+    // Log when first animation frame actually paints
+    requestAnimationFrame(() => {
+        const tPaint = performance.now();
+        console.log(`[${letter.toUpperCase()}] → first paint: ${(tPaint-t0).toFixed(1)}ms after keypress`);
+    });
 
     setTimeout(() => {
         container.classList.remove('active');
