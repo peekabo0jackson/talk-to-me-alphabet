@@ -605,6 +605,7 @@ function playPhonics(letter) {
     // Create AudioContext on first use (must be from user gesture)
     if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        audioCtx.resume();
         startBackgroundDecode(); // Non-blocking background decode
     }
 
