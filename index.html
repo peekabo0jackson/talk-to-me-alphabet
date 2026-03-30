@@ -708,7 +708,7 @@ function startBackgroundDecode() {
         if (!store[letter] && !pendingStore[letter]) {
             getDecodedBuffer(letter, dataMap, store, pendingStore).catch(() => {});
         }
-        requestAnimationFrame(next);
+        setTimeout(next, 100); // Use setTimeout, not rAF — avoid stealing animation frame budget
     }
     next();
 }
